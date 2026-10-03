@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+logs/*
+!logs/.gitkeep
+data/binance/
+results/full_backtest/
+results/full_research/
+.DS_Store

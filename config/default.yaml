@@ -1,0 +1,51 @@
+competition:
+  initial_cash: 100000.0
+  live_days: 14
+  min_active_days: 8
+  taker_fee: 0.0010
+  maker_fee: 0.0005
+  short_open_fee: 0.0010
+  short_close_fee: 0.0010
+
+research:
+  interval: 4h
+  start: "2021-01-01"
+  end: "2026-10-01"
+  signal_delay_bars: 1
+  slippage_bps: 2.0
+  annual_periods: 2190
+  tournament_days: 14
+  holdout_fraction: 0.20
+
+strategy:
+  rebalance_every_bars: 6
+  momentum_24_bars: 6
+  momentum_72_bars: 18
+  momentum_168_bars: 42
+  breakout_bars: 20
+  vol_bars: 42
+  corr_short_bars: 18
+  corr_long_bars: 42
+  top_k: 2
+  bottom_k: 2
+  max_asset_weight: 0.30
+  normal_gross: 1.0
+  stressed_gross: 0.60
+  severe_gross: 0.35
+  max_long_budget: 0.60
+  min_long_budget: 0.40
+  min_trade_weight: 0.05
+  hysteresis_rank_buffer: 2
+  daily_loss_cut: 0.05
+  portfolio_drawdown_cut: 0.08
+  score_weights:
+    cs_mom: 0.50
+    ts_mom: 0.25
+    breakout: 0.25
+
+execution:
+  order_mode: MARKET
+  maker_timeout_seconds: 30
+  poll_seconds: 300
+  stale_data_seconds: 1800
+  max_retries: 5

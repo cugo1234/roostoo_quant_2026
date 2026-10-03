@@ -1,0 +1,19 @@
+[Unit]
+Description=Roostoo Quant Hackathon Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/roostoo_quant_2026
+EnvironmentFile=/home/ubuntu/roostoo_quant_2026/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/roostoo_quant_2026/.venv/bin/python scripts/run_live.py --config config/default.yaml
+Restart=always
+RestartSec=15
+TimeoutStopSec=20
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

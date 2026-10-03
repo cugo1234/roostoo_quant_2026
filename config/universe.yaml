@@ -1,0 +1,25 @@
+# Research proxy only. Live universe is discovered from Roostoo /v3/exchangeInfo.
+# These ten liquid Binance spot USDT pairs have long public histories and are used
+# as a survivorship-aware core proxy with per-symbol listing dates respected.
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+  - BNBUSDT
+  - XRPUSDT
+  - TRXUSDT
+  - DOGEUSDT
+  - ZECUSDT
+  - ADAUSDT
+  - BCHUSDT
+listing_dates:
+  BTCUSDT: "2017-08-17"
+  ETHUSDT: "2017-08-17"
+  BNBUSDT: "2017-11-06"
+  ADAUSDT: "2018-04-17"
+  XRPUSDT: "2018-05-04"
+  TRXUSDT: "2018-06-11"
+  ZECUSDT: "2019-03-21"
+  DOGEUSDT: "2019-07-05"
+  BCHUSDT: "2019-11-28"
+  SOLUSDT: "2020-08-11"

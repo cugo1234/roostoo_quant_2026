@@ -1,0 +1,16 @@
+{
+  "as_of": "2026-10-03",
+  "rules_verified": true,
+  "literature_review_completed": true,
+  "candidate_strategies_designed": 7,
+  "backtester_implemented": true,
+  "unit_tests_passed": 8,
+  "provided_real_sample_audited": true,
+  "synthetic_software_smoke_test_completed": true,
+  "full_multi_year_binance_history_downloaded_in_this_environment": false,
+  "reason_full_history_missing": "bulk external data downloads are blocked by the current execution environment; no historical PnL was fabricated",
+  "full_research_runner_ready": true,
+  "production_bot_scaffold_ready": true,
+  "live_trading_default": false,
+  "strategy_status": "provisional; must pass full out-of-sample research gate before LIVE_TRADING=1"
+}

@@ -1,0 +1,15 @@
+{
+  "rows": 288,
+  "start": "2026-09-29 00:00:00+00:00",
+  "end": "2026-09-29 23:55:00+00:00",
+  "btc_eth_return_correlation_full_sample": 0.8995550913722199,
+  "equal_window_cov_over_corr_identity_max_relative_error": 2.5458146469582073e-16,
+  "valid_cov20": 268,
+  "valid_corr85": 203,
+  "valid_raw_signal": 203,
+  "valid_neutralized": 78,
+  "valid_zscore": 0,
+  "valid_smooth": 0,
+  "valid_alpha": 0,
+  "conclusion": "Sample is too short for the submitted multi-stage warmup if valid_alpha is zero; a flat backtest then tests no positions rather than no alpha."
+}

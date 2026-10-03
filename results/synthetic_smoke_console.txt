@@ -1,0 +1,43 @@
+{
+  "purpose": "software/invariant smoke test only; synthetic results are not strategy evidence",
+  "base_metrics": {
+    "periods": 599.0,
+    "total_return": 0.1594377758594958,
+    "annualized_return": 0.7174917886258618,
+    "annualized_volatility": 0.20704264399362468,
+    "sharpe": 2.71614585963794,
+    "sortino": 2.6833204089133753,
+    "max_drawdown": -0.0840164667367097,
+    "calmar": 8.539894814600252,
+    "win_rate_active_bars": 0.5251798561151079,
+    "mean_bar_return": 0.0002567844841332309,
+    "competition_score": 4.450140365836807,
+    "total_turnover": 46.343308631367734,
+    "avg_turnover_per_bar": 0.07736779404235014,
+    "avg_gross_exposure": 0.9167913052729292,
+    "max_gross_exposure": 1.0000000000000002,
+    "transaction_cost_drag": 0.05561197035764129,
+    "order_count": 339.0,
+    "return_per_order": 0.00047031792288936816
+  },
+  "tournament_summary": {
+    "windows": 516.0,
+    "mean_14d_return": 0.01806713566170815,
+    "median_14d_return": 0.015570451177015499,
+    "p05_return": -0.04551729659672435,
+    "p25_return": -0.014585952446473066,
+    "p75_return": 0.03997029338390079,
+    "p95_return": 0.1065489265871658,
+    "prob_positive_return": 0.6356589147286822,
+    "prob_loss_gt_5pct": 0.040697674418604654,
+    "worst_14d_return": -0.06896175141318606,
+    "best_14d_return": 0.1438558835217718,
+    "median_max_drawdown": -0.04025499918313158,
+    "median_composite_score": 4.768223003183292
+  },
+  "invariants": {
+    "max_gross_exposure": 1.0000000000000002,
+    "lookahead_execution": "signals at close t; target shifted one bar before open-to-open PnL",
+    "fees_charged": true
+  }
+}
