@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "roostoo-quant-2026"
 version = "0.1.0"
 description = "Research and live-trading framework for the 2026 HK vs AU vs IN Roostoo Quant Trading Hackathon"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
   "numpy>=1.24",
   "pandas>=2.0",
