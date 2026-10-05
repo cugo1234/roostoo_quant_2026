@@ -1,134 +1,209 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
+import logging
+import os
+from pathlib import Path
 import time
-from urllib.parse import urlencode
-from typing import Any
 
-import requests
+import pandas as pd
+from dotenv import load_dotenv
+
+from roostoo_quant.config import load_yaml, env_bool
+from roostoo_quant.data.market import BinanceLiveKlines
+from roostoo_quant.execution.executor import ExecutionEngine
+from roostoo_quant.execution.planner import (
+    current_weights,
+    extract_trade_rules,
+    plan_rebalance,
+    portfolio_nav,
+)
+from roostoo_quant.portfolio.construct import (
+    gross_from_stress,
+    long_budget_from_regime,
+    target_weights_from_score,
+)
+from roostoo_quant.roostoo.client import RoostooClient
+from roostoo_quant.signals.correlation_regime import market_stress
+from roostoo_quant.signals.ensemble import core_ensemble
+from roostoo_quant.signals.volatility import realized_vol
+from .state import load_state, save_state
 
 
-class RoostooAPIError(RuntimeError):
-    pass
+LOG = logging.getLogger("roostoo_quant.live")
 
 
-class RoostooClient:
-    """Thin, auditable wrapper around the documented Roostoo public API."""
+def roostoo_to_binance(pair: str) -> str:
+    coin = pair.split("/")[0]
+    return f"{coin}USDT"
 
-    def __init__(self, api_key: str, secret_key: str, base_url: str = "https://mock-api.roostoo.com", timeout: int = 15):
-        self.api_key = api_key
-        self.secret_key = secret_key.encode("utf-8")
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self.session = requests.Session()
 
-    @staticmethod
-    def _local_ms() -> int:
-        return int(time.time() * 1000)
+def binance_to_roostoo(symbol: str) -> str:
+    return f"{symbol.removesuffix('USDT')}/USD"
 
-    def _signed(self, params: dict[str, Any] | None = None) -> tuple[dict[str, str], dict[str, str], str]:
-        payload = {k: str(v) for k, v in (params or {}).items() if v is not None}
-        payload["timestamp"] = str(self._local_ms())
-        ordered = sorted(payload.items(), key=lambda kv: kv[0])
-        query = urlencode(ordered)
-        signature = hmac.new(self.secret_key, query.encode("utf-8"), hashlib.sha256).hexdigest()
-        headers = {"RST-API-KEY": self.api_key, "MSG-SIGNATURE": signature}
-        return headers, payload, query
 
-    @staticmethod
-    def _validate_json(data: dict[str, Any], allow_no_pending: bool = False) -> dict[str, Any]:
-        if "Success" in data and not data.get("Success"):
-            if allow_no_pending and data.get("TotalPending") == 0:
-                return data
-            raise RoostooAPIError(data.get("ErrMsg") or f"Roostoo request failed: {data}")
-        return data
+def _build_live_panels(pairs: list[str], interval: str, limit: int = 240) -> dict[str, pd.DataFrame]:
+    frames = {}
+    source = BinanceLiveKlines()
+    for pair in pairs:
+        sym = roostoo_to_binance(pair)
+        try:
+            df = source.get(sym, interval=interval, limit=limit + 1)
+            if len(df) > 1:
+                df = df.iloc[:-1].copy()
+            if "timestamp" in df.columns:
+                df = df.set_index("timestamp")
+            frames[sym] = df
+        except Exception as exc:
+            LOG.warning("Binance data unavailable for %s: %s", pair, exc)
+    if len(frames) < 2:
+        raise RuntimeError("Fewer than two tradable pairs have usable market data")
+    
+    all_index = None
+    for df in frames.values():
+        all_index = df.index if all_index is None else all_index.union(df.index)
+    if all_index is None or len(all_index) == 0:
+        raise RuntimeError("Empty union of timestamps across market data panels")
+    all_index = all_index.sort_values()
 
-    def _get_public(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        r = self.session.get(self.base_url + path, params=params, timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+    panels = {}
+    for field in ["open", "high", "low", "close", "volume"]:
+        field_dict = {}
+        for sym, df in frames.items():
+            if field in df.columns:
+                field_dict[sym] = df[field]
+        panels[field] = pd.DataFrame(field_dict).reindex(all_index).ffill().dropna()
 
-    def _get_ts(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        p = dict(params or {})
-        p["timestamp"] = str(self._local_ms())
-        r = self.session.get(self.base_url + path, params=p, timeout=self.timeout)
-        r.raise_for_status()
-        return self._validate_json(r.json())
+    if len(panels["close"]) == 0:
+        raise RuntimeError("Empty market data panels after alignment")
+    return panels
 
-    def _get_signed(self, path: str, params: dict[str, Any] | None = None, allow_no_pending: bool = False) -> dict[str, Any]:
-        headers, payload, _ = self._signed(params)
-        r = self.session.get(self.base_url + path, headers=headers, params=payload, timeout=self.timeout)
-        r.raise_for_status()
-        return self._validate_json(r.json(), allow_no_pending=allow_no_pending)
 
-    def _post_signed(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        headers, _, body = self._signed(params)
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-        r = self.session.post(self.base_url + path, headers=headers, data=body, timeout=self.timeout)
-        r.raise_for_status()
-        return self._validate_json(r.json())
+def compute_latest_target(panels: dict[str, pd.DataFrame], cfg: dict, previous: pd.Series | None = None) -> pd.Series:
+    close, high, low = panels["close"], panels["high"], panels["low"]
+    sig = core_ensemble(close, high, low, cfg)
+    vol = realized_vol(close, cfg["strategy"]["vol_bars"])
+    stress = market_stress(close, cfg["strategy"]["corr_short_bars"], cfg["strategy"]["corr_long_bars"])
+    ts = close.index[-1]
+    s = cfg["strategy"]
+    lb = long_budget_from_regime(float(sig["btc_mom"].loc[ts]), float(sig["breadth"].loc[ts]), s["min_long_budget"], s["max_long_budget"])
+    gross = gross_from_stress(float(stress.loc[ts]), s["normal_gross"], s["stressed_gross"], s["severe_gross"])
+    return target_weights_from_score(
+        sig["score"].loc[ts], vol.loc[ts], gross, lb, s["top_k"], s["bottom_k"], s["max_asset_weight"],
+        previous=previous, rank_buffer=s.get("hysteresis_rank_buffer", 0)
+    )
 
-    def server_time(self) -> dict[str, Any]:
-        return self._get_public("/v3/serverTime")
 
-    def exchange_info(self) -> dict[str, Any]:
-        return self._get_public("/v3/exchangeInfo")
+def _interval_seconds(interval: str) -> int:
+    if interval.endswith("h"):
+        return int(interval[:-1]) * 3600
+    if interval.endswith("m"):
+        return int(interval[:-1]) * 60
+    raise ValueError(f"Unsupported interval for cadence: {interval}")
 
-    def ticker(self, pair: str | None = None) -> dict[str, Any]:
-        params = {"pair": pair} if pair else {}
-        return self._get_ts("/v3/ticker", params)
 
-    def balance(self) -> dict[str, Any]:
-        return self._get_signed("/v3/balance")
+def _rebalance_due(ts: pd.Timestamp, interval: str, every_bars: int) -> bool:
+    sec = _interval_seconds(interval)
+    bar_no = int(ts.timestamp()) // sec
+    return bar_no % max(1, every_bars) == max(1, every_bars) - 1
 
-    def pending_count(self) -> dict[str, Any]:
-        return self._get_signed("/v3/pending_count", allow_no_pending=True)
 
-    def place_order(self, pair: str, side: str, quantity: float, order_type: str = "MARKET", price: float | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "pair": pair,
-            "side": side.upper(),
-            "type": order_type.upper(),
-            "quantity": quantity,
-        }
-        if order_type.upper() == "LIMIT":
-            if price is None:
-                raise ValueError("LIMIT order requires price")
-            params["price"] = price
-        return self._post_signed("/v3/place_order", params)
+def ensure_competition_trading_confirmed() -> None:
+    """Require an explicit opt-in before sending competition orders."""
+    load_dotenv()
+    env = os.getenv("ROOSTOO_ENV", "test").strip().lower()
+    confirmation = os.getenv("ROOSTOO_LIVE_TRADING_CONFIRM", "").strip()
+    live_trading = env_bool("LIVE_TRADING", default=False)
+    if env == "competition" and live_trading and confirmation != "YES":
+        raise RuntimeError(
+            "Competition trading blocked. Set ROOSTOO_LIVE_TRADING_CONFIRM=YES explicitly."
+        )
 
-    def query_order(self, order_id: str | int | None = None, pair: str | None = None, pending_only: bool | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {}
-        if order_id is not None:
-            params["order_id"] = order_id
-        elif pair is not None:
-            params["pair"] = pair
-            if pending_only is not None:
-                params["pending_only"] = "TRUE" if pending_only else "FALSE"
-        return self._post_signed("/v3/query_order", params)
 
-    def cancel_order(self, order_id: str | int | None = None, pair: str | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {}
-        if order_id is not None:
-            params["order_id"] = order_id
-        elif pair is not None:
-            params["pair"] = pair
-        return self._post_signed("/v3/cancel_order", params)
+def cancel_all_pending_orders_safe(client: RoostooClient, dry_run: bool = False) -> None:
+    """Check and cancel all pending orders before rebalancing."""
+    if dry_run:
+        LOG.info("[DRY-RUN] Skipping pending order cancellation.")
+        return
 
-    def short_open(self, pair: str, collateral: float, price: float | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {"pair": pair, "collateral": collateral}
-        if price is not None:
-            params.update({"order_type": "LIMIT", "price": price})
-        return self._post_signed("/v6/short_open", params)
+    try:
+        pending_info = client.pending_count()
+        total_pending = pending_info.get("TotalPending", 0) if isinstance(pending_info, dict) else 0
+        
+        if total_pending > 0:
+            LOG.info("Found %d pending orders. Canceling all...", total_pending)
+            res = client.cancel_order()
+            LOG.info("Pending order cancellation result: %s", res)
+        else:
+            LOG.info("No pending orders found.")
+    except Exception as exc:
+        LOG.warning("Error checking/canceling pending orders: %s", exc)
 
-    def short_close(self, pair: str, close_qty: float | None = None, close_pct: float | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {"pair": pair}
-        if close_qty is not None:
-            params["close_qty"] = close_qty
-        elif close_pct is not None:
-            params["close_pct"] = close_pct
-        return self._post_signed("/v6/short_close", params)
 
-    def short_positions(self) -> dict[str, Any]:
-        return self._get_signed("/v6/short_positions")
+def run_once(cfg_path: str = "config/default.yaml") -> dict:
+    load_dotenv()
+    ensure_competition_trading_confirmed()
+    cfg = load_yaml(cfg_path)
+    api_key = os.environ.get("ROOSTOO_API_KEY", "")
+    secret = os.environ.get("ROOSTOO_SECRET_KEY", "")
+    if not api_key or not secret:
+        raise RuntimeError("ROOSTOO_API_KEY and ROOSTOO_SECRET_KEY must be set")
+    dry_run = env_bool("LIVE_TRADING", default=False) is False
+    client = RoostooClient(api_key, secret, os.environ.get("ROOSTOO_BASE_URL", "https://mock-api.roostoo.com"))
+    info = client.exchange_info()
+    rules = extract_trade_rules(info)
+
+    panels = _build_live_panels(list(rules), cfg["research"]["interval"], limit=240)
+    last_bar = panels["close"].index[-1]
+    state_path = Path("logs/state.json")
+    state = load_state(state_path)
+    force = env_bool("FORCE_REBALANCE", default=False)
+    due = _rebalance_due(last_bar, cfg["research"]["interval"], int(cfg["strategy"]["rebalance_every_bars"]))
+    
+    if not force and (not due or state.get("last_rebalanced_bar") == str(last_bar)):
+        tickers = client.ticker()
+        bal = client.balance()
+        shorts = client.short_positions()
+        nav = portfolio_nav(bal, tickers, shorts)
+        return {"nav": nav, "dry_run": dry_run, "status": "no_rebalance_due", "last_completed_bar": str(last_bar)}
+
+    cancel_all_pending_orders_safe(client, dry_run=dry_run)
+
+    tickers = client.ticker()
+    bal = client.balance()
+    shorts = client.short_positions()
+    nav = portfolio_nav(bal, tickers, shorts)
+    current = current_weights(bal, tickers, shorts, nav)
+
+    prev_binance = pd.Series({roostoo_to_binance(k): v for k, v in current.items()})
+    target = compute_latest_target(panels, cfg, previous=prev_binance)
+    target.index = [binance_to_roostoo(x) if x.endswith("USDT") else x for x in target.index]
+    target = target.reindex(list(rules)).fillna(0.0)
+
+    orders = plan_rebalance(target, current, nav, tickers, rules, cfg["strategy"]["min_trade_weight"])
+    state.update({
+        "last_rebalanced_bar": str(last_bar),
+        "last_target": target.to_dict(),
+        "last_planned_orders": [o.__dict__ for o in orders],
+        "last_plan_epoch": int(time.time()),
+    })
+    save_state(state_path, state)
+    engine = ExecutionEngine(client, "logs/trade_ledger.jsonl", dry_run=dry_run)
+    responses = engine.execute(orders)
+    state["last_responses"] = responses
+    state["last_success_epoch"] = int(time.time())
+    save_state(state_path, state)
+    return {"nav": nav, "target": target.to_dict(), "current": current.to_dict(), "orders": [o.__dict__ for o in orders], "responses": responses, "dry_run": dry_run, "last_completed_bar": str(last_bar)}
+
+
+def run_forever(cfg_path: str = "config/default.yaml") -> None:
+    load_dotenv()
+    ensure_competition_trading_confirmed()
+    cfg = load_yaml(cfg_path)
+    poll = int(cfg["execution"]["poll_seconds"])
+    while True:
+        try:
+            result = run_once(cfg_path)
+            LOG.info("cycle complete: %s", result)
+        except Exception:
+            LOG.exception("cycle failed safely")
+        time.sleep(poll)
